@@ -128,6 +128,36 @@ describe('ECDSA', function() {
   test('p384');
   test('p521');
 
+  describe('test for signatures with leading zero in the hash', function() {
+      it('should sign and verify signature', function() {
+        var dgst = '00fc35f7372aa8562b8ce64b93197a0970a513d3b666974f37c1120e9654a56e136baf07a16279a83f6841c376851f356a679664e102f4717e4a10b18e914121';
+        var key = '1e20f5e048a5886f1f157c74e91bde2b98c8b52d58e5003d57053fc4b0bd6' +
+        '5d6f15eb5d1ee1610df870795143627d042';
+        var public = {
+          x: '68b665dd91c195800650cdd363c625f4e742e8134667b767b1b47679358' +
+          '8f885ab698c852d4a6e77a252d6380fcaf068',
+          y: '55bc91a39c9ec01dee36017b7d673a931236d2f1f5c83942d049e3fa206' +
+          '07493e0d038ff2fd30c2ab67d15c85f7faa59'
+        };
+        var ecdsa = new elliptic.ec('brainpoolP384r1');
+        var sign = ecdsa.sign(dgst, key);
+        assert.ok(ecdsa.verify(dgst, sign, public));
+      });
+      it('should verify node crypto signature with leading zero in the hash', function() {
+        var dgst = '00fc35f7372aa8562b8ce64b93197a0970a513d3b666974f37c1120e9654a56e136baf07a16279a83f6841c376851f356a679664e102f4717e4a10b18e914121';
+        var public = '04862ffae892e8d6f321a72b5bd5b62f06177f68a1dd7b667091eeebcd615360165097f0d4ae932b5408644219391b792a1567fdf0efc3a6f56663a103af722398e0d6a3036f19f0b802f73dad846057c19b3015152c84becad4b560da40296e2f';
+        var sig = {
+          r: '3fa687a62f94edf3a7e4d0310fe9c0cdadcb5054ab2a83eff3693b342945ffe1c5974f1b3779a2b375f5e61e3463e3a0',
+          s: '5c012ed923577f929f1e36756167d19c63c478e004f4045277c7f7d02437a1d154c48cf125b007e3d1b7594539b16e87'
+        }
+        var ecdsa = new elliptic.ec('brainpoolP384r1');
+        var publicKey = ecdsa.keyFromPublic(public, 'hex');
+        assert.ok(publicKey.validate().result,
+        'Invalid public key');
+        assert.ok(publicKey.verify(dgst, sig));
+      });
+  });
+
   describe('RFC6979 vector', function() {
     function test(opt) {
       opt.cases.forEach(function(c) {
