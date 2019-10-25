@@ -4,6 +4,7 @@
   "description": "EC cryptography",
   "main": "lib/elliptic.js",
   "files": [
+    "dist",
     "lib"
   ],
   "scripts": {
@@ -12,7 +13,8 @@
     "lint": "npm run jscs && npm run jshint",
     "unit": "istanbul test _mocha --reporter=spec test/index.js",
     "test": "npm run lint && npm run unit",
-    "version": "grunt dist && git add dist/"
+    "version": "grunt dist && git add dist/",
+    "prepare": "grunt dist"
   },
   "repository": {
     "type": "git",
