@@ -3,7 +3,6 @@
 
 var elliptic = exports;
 
-elliptic.version = require('../package.json').version;
 elliptic.utils = require('./elliptic/utils');
 elliptic.rand = require('brorand');
 elliptic.curve = require('./elliptic/curve');
@@ -13,7 +12,7 @@ elliptic.curves = require('./elliptic/curves');
 elliptic.ec = require('./elliptic/ec');
 elliptic.eddsa = require('./elliptic/eddsa');
 
-},{"../package.json":35,"./elliptic/curve":4,"./elliptic/curves":7,"./elliptic/ec":8,"./elliptic/eddsa":11,"./elliptic/utils":15,"brorand":17}],2:[function(require,module,exports){
+},{"./elliptic/curve":4,"./elliptic/curves":7,"./elliptic/ec":8,"./elliptic/eddsa":11,"./elliptic/utils":15,"brorand":17}],2:[function(require,module,exports){
 'use strict';
 
 var BN = require('bn.js');
@@ -849,6 +848,8 @@ function MontCurve(conf) {
   this.b = new BN(conf.b, 16).toRed(this.red);
   this.i4 = new BN(4).toRed(this.red).redInvm();
   this.two = new BN(2).toRed(this.red);
+  // Note: this implementation is according to the original paper
+  // by P. Montgomery, NOT the one by D. J. Bernstein.
   this.a24 = this.i4.redMul(this.a.redAdd(this.two));
 }
 inherits(MontCurve, Base);
@@ -880,7 +881,16 @@ function Point(curve, x, z) {
 inherits(Point, Base.BasePoint);
 
 MontCurve.prototype.decodePoint = function decodePoint(bytes, enc) {
-  return this.point(utils.toArray(bytes, enc), 1);
+  var bytes = utils.toArray(bytes, enc);
+
+  // TODO Curve448
+  // Montgomery curve points must be represented in the compressed format
+  // https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-02#appendix-B
+  if (bytes.length === 33 && bytes[0] === 0x40)
+    bytes = bytes.slice(1, 33).reverse(); // point must be little-endian
+  if (bytes.length !== 32)
+    throw new Error('Unknown point compression format');
+  return this.point(bytes, 1);
 };
 
 MontCurve.prototype.point = function point(x, z) {
@@ -895,8 +905,16 @@ Point.prototype.precompute = function precompute() {
   // No-op
 };
 
-Point.prototype._encode = function _encode() {
-  return this.getX().toArray('be', this.curve.p.byteLength());
+Point.prototype._encode = function _encode(compact) {
+  var len = this.curve.p.byteLength();
+
+  // Note: the output should always be little-endian
+  // https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-02#appendix-B
+  if (compact) {
+    return [ 0x40 ].concat(this.getX().toArray('le', len));
+  } else {
+    return this.getX().toArray('be', len);
+  }
 };
 
 Point.fromJSON = function fromJSON(curve, obj) {
@@ -964,6 +982,8 @@ Point.prototype.diffAdd = function diffAdd(p, diff) {
 };
 
 Point.prototype.mul = function mul(k) {
+  k = new BN(k, 16);
+
   var t = k.clone();
   var a = this; // (N / 2) * Q + Q
   var b = this.curve.point(null, null); // (N / 2) * Q
@@ -1968,14 +1988,15 @@ function PresetCurve(options) {
     this.curve = new curve.short(options);
   else if (options.type === 'edwards')
     this.curve = new curve.edwards(options);
-  else
+  else if (options.type === 'mont')
     this.curve = new curve.mont(options);
+  else throw new Error('Unknown curve type.');
   this.g = this.curve.g;
   this.n = this.curve.n;
   this.hash = options.hash;
 
   assert(this.g.validate(), 'Invalid curve');
-  assert(this.g.mul(this.n).isInfinity(), 'Invalid curve, G*N != O');
+  assert(this.g.mul(this.n).isInfinity(), 'Invalid curve, n*G != O');
 }
 curves.PresetCurve = PresetCurve;
 
@@ -2088,6 +2109,7 @@ defineCurve('p521', {
   ]
 });
 
+// https://tools.ietf.org/html/rfc7748#section-4.1
 defineCurve('curve25519', {
   type: 'mont',
   prime: 'p25519',
@@ -2095,6 +2117,7 @@ defineCurve('curve25519', {
   a: '76d06',
   b: '1',
   n: '1000000000000000 0000000000000000 14def9dea2f79cd6 5812631a5cf5d3ed',
+  cofactor: '8',
   hash: hash.sha256,
   gRed: false,
   g: [
@@ -2111,16 +2134,77 @@ defineCurve('ed25519', {
   // -121665 * (121666^(-1)) (mod P)
   d: '52036cee2b6ffe73 8cc740797779e898 00700a4d4141d8ab 75eb4dca135978a3',
   n: '1000000000000000 0000000000000000 14def9dea2f79cd6 5812631a5cf5d3ed',
+  cofactor: '8',
   hash: hash.sha256,
   gRed: false,
   g: [
     '216936d3cd6e53fec0a4e231fdd6dc5c692cc7609525a7b2c9562d608f25d51a',
-
     // 4/5
     '6666666666666666666666666666666666666666666666666666666666666658'
   ]
 });
 
+// https://tools.ietf.org/html/rfc5639#section-3.4
+defineCurve('brainpoolP256r1', {
+  type: 'short',
+  prime: null,
+  p: 'A9FB57DB A1EEA9BC 3E660A90 9D838D72 6E3BF623 D5262028 2013481D 1F6E5377',
+  a: '7D5A0975 FC2C3057 EEF67530 417AFFE7 FB8055C1 26DC5C6C E94A4B44 F330B5D9',
+  b: '26DC5C6C E94A4B44 F330B5D9 BBD77CBF 95841629 5CF7E1CE 6BCCDC18 FF8C07B6',
+  n: 'A9FB57DB A1EEA9BC 3E660A90 9D838D71 8C397AA3 B561A6F7 901E0E82 974856A7',
+  hash: hash.sha256, // or 384, or 512
+  gRed: false,
+  g: [
+    '8BD2AEB9CB7E57CB2C4B482FFC81B7AFB9DE27E1E3BD23C23A4453BD9ACE3262',
+    '547EF835C3DAC4FD97F8461A14611DC9C27745132DED8E545C1D54C72F046997'
+  ]
+});
+
+// https://tools.ietf.org/html/rfc5639#section-3.6
+defineCurve('brainpoolP384r1', {
+  type: 'short',
+  prime: null,
+  p: '8CB91E82 A3386D28 0F5D6F7E 50E641DF 152F7109 ED5456B4 12B1DA19 7FB71123' +
+    'ACD3A729 901D1A71 87470013 3107EC53',
+  a: '7BC382C6 3D8C150C 3C72080A CE05AFA0 C2BEA28E 4FB22787 139165EF BA91F90F' +
+    '8AA5814A 503AD4EB 04A8C7DD 22CE2826',
+  b: '04A8C7DD 22CE2826 8B39B554 16F0447C 2FB77DE1 07DCD2A6 2E880EA5 3EEB62D5' +
+    '7CB43902 95DBC994 3AB78696 FA504C11',
+  n: '8CB91E82 A3386D28 0F5D6F7E 50E641DF 152F7109 ED5456B3 1F166E6C AC0425A7' +
+    'CF3AB6AF 6B7FC310 3B883202 E9046565',
+  hash: hash.sha384, // or 512
+  gRed: false,
+  g: [
+    '1D1C64F068CF45FFA2A63A81B7C13F6B8847A3E77EF14FE3DB7FCAFE0CBD10' +
+      'E8E826E03436D646AAEF87B2E247D4AF1E',
+    '8ABE1D7520F9C2A45CB1EB8E95CFD55262B70B29FEEC5864E19C054FF99129' +
+      '280E4646217791811142820341263C5315'
+  ]
+});
+
+// https://tools.ietf.org/html/rfc5639#section-3.7
+defineCurve('brainpoolP512r1', {
+  type: 'short',
+  prime: null,
+  p: 'AADD9DB8 DBE9C48B 3FD4E6AE 33C9FC07 CB308DB3 B3C9D20E D6639CCA 70330871' +
+    '7D4D9B00 9BC66842 AECDA12A E6A380E6 2881FF2F 2D82C685 28AA6056 583A48F3',
+  a: '7830A331 8B603B89 E2327145 AC234CC5 94CBDD8D 3DF91610 A83441CA EA9863BC' +
+    '2DED5D5A A8253AA1 0A2EF1C9 8B9AC8B5 7F1117A7 2BF2C7B9 E7C1AC4D 77FC94CA',
+  b: '3DF91610 A83441CA EA9863BC 2DED5D5A A8253AA1 0A2EF1C9 8B9AC8B5 7F1117A7' +
+    '2BF2C7B9 E7C1AC4D 77FC94CA DC083E67 984050B7 5EBAE5DD 2809BD63 8016F723',
+  n: 'AADD9DB8 DBE9C48B 3FD4E6AE 33C9FC07 CB308DB3 B3C9D20E D6639CCA 70330870' +
+    '553E5C41 4CA92619 41866119 7FAC1047 1DB1D381 085DDADD B5879682 9CA90069',
+  hash: hash.sha512,
+  gRed: false,
+  g: [
+    '81AEE4BDD82ED9645A21322E9C4C6A9385ED9F70B5D916C1B43B62EEF4D009' +
+      '8EFF3B1F78E2D0D48D50D1687B93B97D5F7C6D5047406A5E688B352209BCB9F822',
+    '7DDE385D566332ECC0EABFA9CF7822FDF209F70024A57B1AA000C55B881F81' +
+      '11B2DCDE494A5F485E5BCA4BD88A2763AED1CA2B2FA8F0540678CD1E0F3AD80892'
+  ]
+});
+
+// https://en.bitcoin.it/wiki/Secp256k1
 var pre;
 try {
   pre = require('./precomputed/secp256k1');
@@ -2197,7 +2281,7 @@ function EC(options) {
   this.g = options.curve.g;
   this.g.precompute(options.curve.n.bitLength() + 1);
 
-  // Hash for function for DRBG
+  // Hash function for DRBG
   this.hash = options.hash || options.curve.hash;
 }
 module.exports = EC;
@@ -2228,6 +2312,12 @@ EC.prototype.genKeyPair = function genKeyPair(options) {
     nonce: this.n.toArray()
   });
 
+  // Key generation for curve25519 is simpler
+  if (this.curve.type === 'mont') {
+    var priv = new BN(drbg.generate(32));
+    return this.keyFromPrivate(priv);
+  }
+
   var bytes = this.n.byteLength();
   var ns2 = this.n.sub(new BN(2));
   do {
@@ -2240,8 +2330,9 @@ EC.prototype.genKeyPair = function genKeyPair(options) {
   } while (true);
 };
 
-EC.prototype._truncateToN = function truncateToN(msg, truncOnly) {
-  var delta = msg.byteLength() * 8 - this.n.bitLength();
+EC.prototype._truncateToN = function truncateToN(msg, truncOnly, bitSize) {
+  bitSize = bitSize || msg.byteLength() * 8;
+  var delta = bitSize - this.n.bitLength();
   if (delta > 0)
     msg = msg.ushrn(delta);
   if (!truncOnly && msg.cmp(this.n) >= 0)
@@ -2249,6 +2340,21 @@ EC.prototype._truncateToN = function truncateToN(msg, truncOnly) {
   else
     return msg;
 };
+
+EC.prototype.truncateMsg  = function truncateMSG(msg) {
+  // Bit size is only determined correctly for Uint8Arrays and hex strings
+  var bitSize;
+  if (msg instanceof Uint8Array) {
+    bitSize = msg.byteLength * 8;
+    msg = this._truncateToN(new BN(msg, 16), false, bitSize);
+  } else if (typeof msg === 'string') {
+    bitSize = msg.length * 4;
+    msg = this._truncateToN(new BN(msg, 16), false, bitSize);
+  } else {
+    msg = this._truncateToN(new BN(msg, 16));
+  }
+  return msg;
+}
 
 EC.prototype.sign = function sign(msg, key, enc, options) {
   if (typeof enc === 'object') {
@@ -2259,7 +2365,7 @@ EC.prototype.sign = function sign(msg, key, enc, options) {
     options = {};
 
   key = this.keyFromPrivate(key, enc);
-  msg = this._truncateToN(new BN(msg, 16));
+  msg = this.truncateMsg(msg);
 
   // Zero-extend key to provide enough entropy
   var bytes = this.n.byteLength();
@@ -2316,10 +2422,15 @@ EC.prototype.sign = function sign(msg, key, enc, options) {
 };
 
 EC.prototype.verify = function verify(msg, signature, key, enc) {
-  msg = this._truncateToN(new BN(msg, 16));
   key = this.keyFromPublic(key, enc);
   signature = new Signature(signature, 'hex');
+  // Fallback to the old code
+  var ret = this._verify(this.truncateMsg(msg), signature, key) ||
+  this._verify(this._truncateToN(new BN(msg, 16)), signature, key);
+  return ret;
+};
 
+EC.prototype._verify = function _verify(msg, signature, key) {
   // Perform primitive values validation
   var r = signature.r;
   var s = signature.s;
@@ -2443,6 +2554,7 @@ KeyPair.fromPrivate = function fromPrivate(ec, priv, enc) {
   });
 };
 
+// TODO: should not validate for X25519
 KeyPair.prototype.validate = function validate() {
   var pub = this.getPublic();
 
@@ -2456,13 +2568,7 @@ KeyPair.prototype.validate = function validate() {
   return { result: true, reason: null };
 };
 
-KeyPair.prototype.getPublic = function getPublic(compact, enc) {
-  // compact is optional argument
-  if (typeof compact === 'string') {
-    enc = compact;
-    compact = null;
-  }
-
+KeyPair.prototype.getPublic = function getPublic(enc, compact) {
   if (!this.pub)
     this.pub = this.ec.g.mul(this.priv);
 
@@ -2482,9 +2588,17 @@ KeyPair.prototype.getPrivate = function getPrivate(enc) {
 KeyPair.prototype._importPrivate = function _importPrivate(key, enc) {
   this.priv = new BN(key, enc || 16);
 
-  // Ensure that the priv won't be bigger than n, otherwise we may fail
-  // in fixed multiplication method
-  this.priv = this.priv.umod(this.ec.curve.n);
+  // For Curve25519/Curve448 we have a specific procedure.
+  // TODO Curve448
+  if (this.ec.curve.type === 'mont') {
+    var one = this.ec.curve.one;
+    var mask = one.ushln(255 - 3).sub(one).ushln(3);
+    this.priv = this.priv.or(one.ushln(255 - 1));
+    this.priv = this.priv.and(mask);
+  } else
+    // Ensure that the priv won't be bigger than n, otherwise we may fail
+    // in fixed multiplication method
+    this.priv = this.priv.umod(this.ec.curve.n);
 };
 
 KeyPair.prototype._importPublic = function _importPublic(key, enc) {
@@ -2663,6 +2777,8 @@ Signature.prototype.toDER = function toDER(enc) {
 'use strict';
 
 var hash = require('hash.js');
+var HmacDRBG = require('hmac-drbg');
+var rand = require('brorand');
 var curves = require('../curves');
 var utils = require('../utils');
 var assert = utils.assert;
@@ -2728,12 +2844,33 @@ EDDSA.prototype.hashInt = function hashInt() {
   return utils.intFromLE(hash.digest()).umod(this.curve.n);
 };
 
+EDDSA.prototype.keyPair = function keyPair(options) {
+  return new KeyPair(this, options);
+};
+
 EDDSA.prototype.keyFromPublic = function keyFromPublic(pub) {
   return KeyPair.fromPublic(this, pub);
 };
 
 EDDSA.prototype.keyFromSecret = function keyFromSecret(secret) {
   return KeyPair.fromSecret(this, secret);
+};
+
+EDDSA.prototype.genKeyPair = function genKeyPair(options) {
+  if (!options)
+    options = {};
+
+  // Instantiate Hmac_DRBG
+  var drbg = new HmacDRBG({
+    hash: this.hash,
+    pers: options.pers,
+    persEnc: options.persEnc || 'utf8',
+    entropy: options.entropy || rand(this.hash.hmacStrength),
+    entropyEnc: options.entropy && options.entropyEnc || 'utf8',
+    nonce: this.curve.n.toArray()
+  });
+
+  return this.keyFromSecret(drbg.generate(32));
 };
 
 EDDSA.prototype.makeSignature = function makeSignature(sig) {
@@ -2779,7 +2916,7 @@ EDDSA.prototype.isPoint = function isPoint(val) {
   return val instanceof this.pointClass;
 };
 
-},{"../curves":7,"../utils":15,"./key":12,"./signature":13,"hash.js":19}],12:[function(require,module,exports){
+},{"../curves":7,"../utils":15,"./key":12,"./signature":13,"brorand":17,"hash.js":19,"hmac-drbg":31}],12:[function(require,module,exports){
 'use strict';
 
 var utils = require('../utils');
@@ -2798,11 +2935,18 @@ var cachedProperty = utils.cachedProperty;
 */
 function KeyPair(eddsa, params) {
   this.eddsa = eddsa;
-  this._secret = parseBytes(params.secret);
+  if (params.hasOwnProperty('secret'))
+    this._secret = parseBytes(params.secret);
   if (eddsa.isPoint(params.pub))
     this._pub = params.pub;
-  else
+  else {
     this._pubBytes = parseBytes(params.pub);
+    if (this._pubBytes && this._pubBytes.length === 33 &&
+        this._pubBytes[0] === 0x40)
+      this._pubBytes = this._pubBytes.slice(1, 33);
+    if (this._pubBytes && this._pubBytes.length !== 32)
+      throw new Error('Unknown point compression format');
+  }
 }
 
 KeyPair.fromPublic = function fromPublic(eddsa, pub) {
@@ -2836,6 +2980,7 @@ cachedProperty(KeyPair, 'privBytes', function privBytes() {
   var hash = this.hash();
   var lastIx = eddsa.encodingLength - 1;
 
+  // https://tools.ietf.org/html/rfc8032#section-5.1.5
   var a = hash.slice(0, eddsa.encodingLength);
   a[0] &= 248;
   a[lastIx] &= 127;
@@ -2870,8 +3015,8 @@ KeyPair.prototype.getSecret = function getSecret(enc) {
   return utils.encode(this.secret(), enc);
 };
 
-KeyPair.prototype.getPublic = function getPublic(enc) {
-  return utils.encode(this.pubBytes(), enc);
+KeyPair.prototype.getPublic = function getPublic(enc, compact) {
+  return utils.encode((compact ? [ 0x40 ] : []).concat(this.pubBytes()), enc);
 };
 
 module.exports = KeyPair;
@@ -8793,66 +8938,6 @@ utils.encode = function encode(arr, enc) {
   else
     return arr;
 };
-
-},{}],35:[function(require,module,exports){
-module.exports={
-  "name": "elliptic",
-  "version": "6.5.1",
-  "description": "EC cryptography",
-  "main": "lib/elliptic.js",
-  "files": [
-    "lib"
-  ],
-  "scripts": {
-    "jscs": "jscs benchmarks/*.js lib/*.js lib/**/*.js lib/**/**/*.js test/index.js",
-    "jshint": "jscs benchmarks/*.js lib/*.js lib/**/*.js lib/**/**/*.js test/index.js",
-    "lint": "npm run jscs && npm run jshint",
-    "unit": "istanbul test _mocha --reporter=spec test/index.js",
-    "test": "npm run lint && npm run unit",
-    "version": "grunt dist && git add dist/"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git@github.com:indutny/elliptic"
-  },
-  "keywords": [
-    "EC",
-    "Elliptic",
-    "curve",
-    "Cryptography"
-  ],
-  "author": "Fedor Indutny <fedor@indutny.com>",
-  "license": "MIT",
-  "bugs": {
-    "url": "https://github.com/indutny/elliptic/issues"
-  },
-  "homepage": "https://github.com/indutny/elliptic",
-  "devDependencies": {
-    "brfs": "^1.4.3",
-    "coveralls": "^3.0.4",
-    "grunt": "^1.0.4",
-    "grunt-browserify": "^5.0.0",
-    "grunt-cli": "^1.2.0",
-    "grunt-contrib-connect": "^1.0.0",
-    "grunt-contrib-copy": "^1.0.0",
-    "grunt-contrib-uglify": "^1.0.1",
-    "grunt-mocha-istanbul": "^3.0.1",
-    "grunt-saucelabs": "^9.0.1",
-    "istanbul": "^0.4.2",
-    "jscs": "^3.0.7",
-    "jshint": "^2.6.0",
-    "mocha": "^6.1.4"
-  },
-  "dependencies": {
-    "bn.js": "^4.4.0",
-    "brorand": "^1.0.1",
-    "hash.js": "^1.0.0",
-    "hmac-drbg": "^1.0.0",
-    "inherits": "^2.0.1",
-    "minimalistic-assert": "^1.0.0",
-    "minimalistic-crypto-utils": "^1.0.0"
-  }
-}
 
 },{}]},{},[1])(1)
 });

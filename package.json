@@ -1,5 +1,5 @@
 {
-  "name": "elliptic",
+  "name": "@openpgp/elliptic",
   "version": "6.5.1",
   "description": "EC cryptography",
   "main": "lib/elliptic.js",
